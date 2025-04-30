@@ -7,6 +7,9 @@ from tqdm import tqdm
 import argparse
 import time
 import subprocess
+from telegram import Bot
+from telegram.error import TelegramError
+import asyncio
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
 with open(CONFIG_PATH, 'r') as f:
@@ -61,6 +64,21 @@ def parse_date(item):
         return datetime.strptime(date_str, "%b %d %H:%M")
     except ValueError:
         return None
+
+async def try_telegram_upload(config, file_path):
+    bot_token = config.get('telegram_bot_token')
+    channel_id = config.get('telegram_channel_id')
+    if not bot_token or not channel_id:
+        return False
+    try:
+        bot = Bot(token=bot_token)
+        with open(file_path, 'rb') as vid:
+            await bot.send_video(chat_id=channel_id, video=vid, supports_streaming=True)
+        print(f'Successfully uploaded to Telegram: {channel_id}')
+        return True
+    except TelegramError as e:
+        print(f'Failed to upload to Telegram: {e}')
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Download timelapse videos via FTP.")
@@ -143,6 +161,11 @@ def main():
                     try:
                         subprocess.run(ffmpeg_cmd, check=True)
                         print(f'Streamable file created: {streamable_filename}')
+                        # Telegram upload if config present
+                        tg_success = asyncio.run(try_telegram_upload(config, streamable_filename))
+                        if tg_success:
+                            os.remove(streamable_filename)
+                            print(f'Streamable file deleted after Telegram upload: {streamable_filename}')
                         # Delete original file if conversion succeeded
                         os.remove(local_filename)
                         print(f'Original file deleted: {local_filename}')

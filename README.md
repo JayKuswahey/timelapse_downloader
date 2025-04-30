@@ -115,6 +115,33 @@ The original file is deleted after successful conversion.
 
 ---
 
+## Telegram Upload (Optional)
+
+If you want each streamable video to be uploaded automatically to a Telegram channel:
+
+1. Create a Telegram bot and get the bot token.
+2. Add the bot to your channel/group and get the channel username (e.g. @your_channel) or chat ID.
+3. Add these fields to your `config.json`:
+   ```json
+   {
+     "telegram_bot_token": "YOUR_BOT_TOKEN",
+     "telegram_channel_id": "@your_channel_or_chat_id"
+   }
+   ```
+
+### How to Get Your Telegram Group Chat ID
+
+1. **Invite [@ShowJsonBot](https://t.me/ShowJsonBot) to your group.**
+2. **Send any message in the group.**
+3. **The bot will reply with the full JSON, including the chat ID.**
+4. **Use the value of `"id"` as your `telegram_channel_id` in `config.json`.**
+
+If both fields are present, every converted (streamable) video will be uploaded to your Telegram channel automatically after processing.
+
+If not set, Telegram upload is skipped.
+
+---
+
 ## Notes
 
 - Ensure your printer’s FTP server is accessible and credentials are correct (set in `config.json`).
