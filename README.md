@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Project Logo" width="200"/>
+</p>
+
 # Bambu Timelapse Downloader
 
 A Python tool to automate downloading, upscaling, and making streamable timelapse videos from a Bambu 3D printer via FTPS.
