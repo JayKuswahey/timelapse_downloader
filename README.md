@@ -150,6 +150,12 @@ If not set, Telegram upload is skipped.
 
 ---
 
+## Attribution
+
+Inspired by [SuiDog’s post on the Bambu Lab Forum](https://forum.bambulab.com/t/connecting-to-the-p1s-ftp-with-python/115179).
+
+---
+
 ## License
 
 MIT License

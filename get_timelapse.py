@@ -10,6 +10,7 @@ import subprocess
 from telegram import Bot
 from telegram.error import TelegramError
 import asyncio
+import re
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
 with open(CONFIG_PATH, 'r') as f:
@@ -65,7 +66,16 @@ def parse_date(item):
     except ValueError:
         return None
 
-async def try_telegram_upload(config, file_path):
+def extract_datetime_from_filename(filename):
+    # Matches video_YYYY-MM-DD_HH-MM-SS.*
+    m = re.search(r'video_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})', filename)
+    if m:
+        date_str = m.group(1)
+        time_str = m.group(2).replace('-', ':')
+        return f"Timelapse: {date_str} {time_str}"
+    return "Timelapse"
+
+async def try_telegram_upload(config, file_path, caption=None):
     bot_token = config.get('telegram_bot_token')
     channel_id = config.get('telegram_channel_id')
     if not bot_token or not channel_id:
@@ -73,7 +83,7 @@ async def try_telegram_upload(config, file_path):
     try:
         bot = Bot(token=bot_token)
         with open(file_path, 'rb') as vid:
-            await bot.send_video(chat_id=channel_id, video=vid, supports_streaming=True)
+            await bot.send_video(chat_id=channel_id, video=vid, supports_streaming=True, caption=caption)
         print(f'Successfully uploaded to Telegram: {channel_id}')
         return True
     except TelegramError as e:
@@ -90,6 +100,7 @@ def main():
     parser.add_argument('--out', default=default_timelapse_dir, help='Output folder to save videos (default: ./timelapse)')
     parser.add_argument('--watch', action='store_true', help='Continuously check every 60s and download new files')
     parser.add_argument('--no-make-streamable', action='store_true', help='Do NOT use ffmpeg+NVIDIA to upscale to 1080p and make streamable (default is ON)')
+    parser.add_argument('--keep-after-upload', action='store_true', help='Keep streamable file after Telegram upload (default: delete after upload)')
     args = parser.parse_args()
 
     out_dir = args.out
@@ -162,8 +173,9 @@ def main():
                         subprocess.run(ffmpeg_cmd, check=True)
                         print(f'Streamable file created: {streamable_filename}')
                         # Telegram upload if config present
-                        tg_success = asyncio.run(try_telegram_upload(config, streamable_filename))
-                        if tg_success:
+                        caption = extract_datetime_from_filename(os.path.basename(local_filename))
+                        tg_success = asyncio.run(try_telegram_upload(config, streamable_filename, caption=caption))
+                        if tg_success and not args.keep_after_upload:
                             os.remove(streamable_filename)
                             print(f'Streamable file deleted after Telegram upload: {streamable_filename}')
                         # Delete original file if conversion succeeded
