@@ -95,12 +95,13 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--last', action='store_true', help='Download the latest timelapse video (default)')
     group.add_argument('--all', action='store_true', help='Download all matching timelapse videos')
-    parser.add_argument('--do_not_delete', action='store_true', help="Do not delete remote file(s) after download")
+    parser.add_argument('--do-not-delete', action='store_true', help="Do not delete remote file(s) after download")
     default_timelapse_dir = os.path.join(os.path.dirname(__file__), 'timelapse')
     parser.add_argument('--out', default=default_timelapse_dir, help='Output folder to save videos (default: ./timelapse)')
     parser.add_argument('--watch', action='store_true', help='Continuously check every 60s and download new files')
     parser.add_argument('--no-make-streamable', action='store_true', help='Do NOT use ffmpeg+NVIDIA to upscale to 1080p and make streamable (default is ON)')
     parser.add_argument('--keep-after-upload', action='store_true', help='Keep streamable file after Telegram upload (default: delete after upload)')
+    parser.add_argument('--no-gpu', action='store_true', help='Force CPU-only processing (no NVIDIA GPU required)')
     args = parser.parse_args()
 
     out_dir = args.out
@@ -161,13 +162,22 @@ def main():
                 # Optionally process with ffmpeg (default ON)
                 if not args.no_make_streamable:
                     streamable_filename = os.path.splitext(local_filename)[0] + '_streamable.mp4'
-                    ffmpeg_cmd = [
-                        'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', local_filename,
-                        '-vf', 'scale=1920:1080',
-                        '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '15M',
-                        '-tag:v', 'hvc1', '-video_track_timescale', '90000',
-                        streamable_filename
-                    ]
+                    if args.no_gpu:
+                        ffmpeg_cmd = [
+                            'ffmpeg', '-y', '-i', local_filename,
+                            '-vf', 'scale=1920:1080',
+                            '-c:v', 'libx265', '-preset', 'slow', '-b:v', '15M',
+                            '-tag:v', 'hvc1', '-video_track_timescale', '90000',
+                            streamable_filename
+                        ]
+                    else:
+                        ffmpeg_cmd = [
+                            'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', local_filename,
+                            '-vf', 'scale=1920:1080',
+                            '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '15M',
+                            '-tag:v', 'hvc1', '-video_track_timescale', '90000',
+                            streamable_filename
+                        ]
                     print(f'Running ffmpeg to create streamable: {streamable_filename}')
                     try:
                         subprocess.run(ffmpeg_cmd, check=True)

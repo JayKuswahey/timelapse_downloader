@@ -13,7 +13,7 @@ A Python tool to automate downloading, upscaling, and making streamable timelaps
 - **Secure Download:** Downloads timelapse videos from your Bambu printer using FTPS.
 - **Flexible Selection:** Download the latest or all available timelapse videos.
 - **Watch Mode:** Continuously checks for new videos every 60 seconds and downloads them automatically.
-- **Automatic Conversion:** By default, upscales videos to 1080p and makes them streamable using ffmpeg with NVIDIA GPU acceleration.
+- **Automatic Conversion:** By default, upscales videos to 1080p and makes them streamable using ffmpeg with NVIDIA GPU acceleration, or CPU-only mode with `--no-gpu`.
 - **Clean-Up:** Deletes remote files after download and deletes original files after successful conversion.
 - **Configurable:** Printer credentials are stored in a config file, not in the script.
 - **Organized Output:** Stores videos in a `timelapse` subfolder by default.
@@ -24,7 +24,7 @@ A Python tool to automate downloading, upscaling, and making streamable timelaps
 
 - Python 3.7+
 - tqdm
-- ffmpeg (with NVIDIA GPU support and `hevc_nvenc`)
+- ffmpeg (with NVIDIA GPU support and `hevc_nvenc`) or just CPU (see `--no-gpu` option)
 - Bambu printer with FTP access
 
 ---
@@ -74,7 +74,7 @@ python get_timelapse.py [options]
 - `--out <folder>`  
   Output directory to save downloaded videos (default: ./timelapse).
 
-- `--do_not_delete`  
+- `--do-not-delete`  
   Do not delete remote file(s) after download (ignored in --watch mode).
 
 - `--watch`  
@@ -82,6 +82,9 @@ python get_timelapse.py [options]
 
 - `--no-make-streamable`  
   Do **not** convert videos to streamable 1080p using ffmpeg (by default, conversion is ON).
+
+- `--no-gpu`  
+  Force CPU-only processing for video conversion (useful if you do not have an NVIDIA GPU; uses libx265 instead of hevc_nvenc).
 
 ### Example Commands
 
@@ -105,14 +108,24 @@ Download without conversion:
 python get_timelapse.py --no-make-streamable
 ```
 
+Download and convert using CPU only (no NVIDIA GPU required):
+```bash
+python get_timelapse.py --no-gpu
+```
+
 ---
 
 ## ffmpeg Conversion
 
-By default, after download, each video is converted to a streamable 1080p MP4 using your NVIDIA GPU:
+By default, after download, each video is converted to a streamable 1080p MP4 using your NVIDIA GPU. If you use `--no-gpu`, conversion will use CPU (libx265) instead.
 
 ```bash
 ffmpeg -y -hwaccel cuda -i input.mp4 -vf scale=1920:1080 -c:v hevc_nvenc -preset p7 -tune hq -b:v 15M -tag:v hvc1 -video_track_timescale 90000 output_streamable.mp4
+```
+
+**CPU-only example (with --no-gpu):**
+```bash
+ffmpeg -y -i input.mp4 -vf scale=1920:1080 -c:v libx265 -preset slow -b:v 15M -tag:v hvc1 -video_track_timescale 90000 output_streamable.mp4
 ```
 
 The original file is deleted after successful conversion.
