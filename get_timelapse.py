@@ -208,7 +208,14 @@ def main():
             download_and_process()
             time.sleep(60)
     else:
-        download_and_process()
+        while True:
+            try:
+                download_and_process()
+                break  # Exit loop if successful
+            except Exception as e:
+                print(f"Error occurred: {e}")
+                print("Retrying in 60 seconds...")
+                time.sleep(60)
 
 if __name__ == "__main__":
     main()
