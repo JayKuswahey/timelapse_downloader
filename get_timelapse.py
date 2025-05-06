@@ -75,6 +75,18 @@ def extract_datetime_from_filename(filename):
         return f"Timelapse: {date_str} {time_str}"
     return "Timelapse"
 
+# Utility function to get video duration using ffprobe
+def get_video_duration(filename):
+    try:
+        result = subprocess.run([
+            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', filename
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return float(result.stdout.strip())
+    except Exception as e:
+        print(f"Could not determine video duration for {filename}: {e}")
+        return 0.0
+
 async def try_telegram_upload(config, file_path, caption=None):
     bot_token = config.get('telegram_bot_token')
     channel_id = config.get('telegram_channel_id')
@@ -129,7 +141,7 @@ def main():
 
             if not matching_files:
                 print('No matching files found.')
-                return
+                return False
 
             matching_files.sort(key=lambda x: parse_date(x) or datetime.min, reverse=True)
             files_to_download = [matching_files[0]] if not args.all else matching_files
@@ -153,12 +165,26 @@ def main():
                                 total_pbar.update(len(data))
                         ftp.retrbinary(f'RETR /timelapse/{item["name"]}', callback)
                 print(f'File downloaded: {local_filename}')
+                # Check video duration before any processing
+                duration = get_video_duration(local_filename)
+                if duration < 2.0:
+                    print(f"Skipping processing: {local_filename} is too short ({duration:.2f}s)")
+                    os.remove(local_filename)
+                    print(f'Short file deleted: {local_filename}')
+                    short_file_skipped = True
+                else:
+                    short_file_skipped = False
+
                 # Always delete remote file in watch mode, or respect arg otherwise
                 if args.watch or not args.do_not_delete:
                     ftp.delete(f'/timelapse/{item["name"]}')
                     print(f'Remote file deleted: /timelapse/{item["name"]}\n')
                 else:
                     print(f'Remote file retained: /timelapse/{item["name"]}\n')
+
+                if short_file_skipped:
+                    continue
+
                 # Optionally process with ffmpeg (default ON)
                 if not args.no_make_streamable:
                     streamable_filename = os.path.splitext(local_filename)[0] + '_streamable.mp4'
@@ -182,7 +208,6 @@ def main():
                     try:
                         subprocess.run(ffmpeg_cmd, check=True)
                         print(f'Streamable file created: {streamable_filename}')
-                        # Telegram upload if config present
                         caption = extract_datetime_from_filename(os.path.basename(local_filename))
                         tg_success = asyncio.run(try_telegram_upload(config, streamable_filename, caption=caption))
                         if tg_success and not args.keep_after_upload:
@@ -198,15 +223,18 @@ def main():
 
         except all_errors as ex:
             print(ex)
+            return False
         finally:
             ftp.quit()
             print('Disconnected. Enjoy =D')
+        return True
 
     if args.watch:
         print('Entering watch mode. Checking for new files every 60 seconds...')
         while True:
-            download_and_process()
-            time.sleep(60)
+            processed_files = download_and_process()
+            if not processed_files:
+                time.sleep(60)
     else:
         while True:
             try:
