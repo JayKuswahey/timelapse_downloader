@@ -177,9 +177,36 @@ def main():
 
                 # Always delete remote file in watch mode, or respect arg otherwise
                 if args.watch or not args.do_not_delete:
-                    ftp.delete(f'/timelapse/{item["name"]}')
-                    print(f'Remote file deleted: /timelapse/{item["name"]}\n')
-                else:
+                    video_file_ftp_path = f'/timelapse/{item["name"]}'
+                    deleted_video_successfully = False
+                    try:
+                        ftp.delete(video_file_ftp_path)
+                        print(f'Remote file deleted: {video_file_ftp_path}')
+                        deleted_video_successfully = True
+                    except Exception as e:
+                        print(f'Failed to delete remote file {video_file_ftp_path}: {e}\n')
+
+                    if deleted_video_successfully:
+                        video_base_name = get_base_name(item['name'])
+                        thumbnail_to_delete_full_name = None
+                        # Find the corresponding thumbnail's full name from tltndirlist
+                        for tn_item_detail in tltndirlist: # tltndirlist has dicts with 'name' key
+                            if get_base_name(tn_item_detail['name']) == video_base_name:
+                                thumbnail_to_delete_full_name = tn_item_detail['name']
+                                break
+                        
+                        if thumbnail_to_delete_full_name:
+                            thumbnail_ftp_path = f'/timelapse/thumbnail/{thumbnail_to_delete_full_name}'
+                            try:
+                                ftp.delete(thumbnail_ftp_path)
+                                print(f'Remote thumbnail deleted: {thumbnail_ftp_path}\n')
+                            except Exception as e:
+                                print(f'Failed to delete remote thumbnail {thumbnail_ftp_path}: {e}\n')
+                        else:
+                            # If video was deleted, but no thumbnail found for deletion.
+                            print(f'No corresponding remote thumbnail found for base name {video_base_name} to delete.\n')
+                    # If deleted_video_successfully was False, its error message already included \n.
+                else: # This is the "do_not_delete" case
                     print(f'Remote file retained: /timelapse/{item["name"]}\n')
 
                 if short_file_skipped:
