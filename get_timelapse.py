@@ -175,8 +175,8 @@ def main():
                 else:
                     short_file_skipped = False
 
-                # Always delete remote file in watch mode, or respect arg otherwise
-                if args.watch or not args.do_not_delete:
+                # Delete remote files by default; use --do-not-delete to prevent deletion.
+                if not args.do_not_delete:
                     video_file_ftp_path = f'/timelapse/{item["name"]}'
                     deleted_video_successfully = False
                     try:
