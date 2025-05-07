@@ -167,7 +167,7 @@ def main():
                 print(f'File downloaded: {local_filename}')
                 # Check video duration before any processing
                 duration = get_video_duration(local_filename)
-                if duration < 2.0:
+                if duration < 1.0:
                     print(f"Skipping processing: {local_filename} is too short ({duration:.2f}s)")
                     os.remove(local_filename)
                     print(f'Short file deleted: {local_filename}')
