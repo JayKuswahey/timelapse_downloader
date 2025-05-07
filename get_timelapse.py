@@ -219,7 +219,7 @@ def main():
                         ffmpeg_cmd = [
                             'ffmpeg', '-y', '-i', local_filename,
                             '-vf', 'scale=1920:1080',
-                            '-c:v', 'libx265', '-preset', 'slow', '-b:v', '15M',
+                            '-c:v', 'libx265', '-preset', 'slow', '-b:v', '5M',
                             '-tag:v', 'hvc1', '-video_track_timescale', '90000',
                             streamable_filename
                         ]
@@ -227,7 +227,7 @@ def main():
                         ffmpeg_cmd = [
                             'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', local_filename,
                             '-vf', 'scale=1920:1080',
-                            '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '15M',
+                            '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '5M',
                             '-tag:v', 'hvc1', '-video_track_timescale', '90000',
                             streamable_filename
                         ]
