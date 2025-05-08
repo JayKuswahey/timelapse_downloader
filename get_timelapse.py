@@ -123,7 +123,7 @@ def main():
         ftp = ImplicitFTP_TLS()
         ftp.set_pasv(True)
         print('Connecting...')
-        ftp.connect(host=PRINTER_IP, port=990, timeout=5, source_address=None)
+        ftp.connect(host=PRINTER_IP, port=990, timeout=15, source_address=None)
         ftp.login('bblp', ACCESS_CODE)
         ftp.prot_p()
         try:
@@ -235,14 +235,37 @@ def main():
                     try:
                         subprocess.run(ffmpeg_cmd, check=True)
                         print(f'Streamable file created: {streamable_filename}')
+
+                        # Check file size before attempting upload
+                        max_telegram_size = 49 * 1024 * 1024  # 49 MB
+                        try:
+                            file_size = os.path.getsize(streamable_filename)
+                        except FileNotFoundError:
+                            print(f'Error: Streamable file {streamable_filename} not found after ffmpeg run. Skipping item.')
+                            continue # Skip to next item in the main for loop
+
+                        if file_size > max_telegram_size:
+                            print(f'WARNING: Streamable file {streamable_filename} ({file_size / (1024*1024):.2f}MB) is too large for Telegram (limit ~49MB).')
+                            print(f'Skipping upload for this file. Both {streamable_filename} and original {local_filename} will be kept for manual handling.')
+                            continue # Skip Telegram upload and subsequent deletions for THIS oversized file
+
+                        # Proceed with Telegram upload if size is okay
                         caption = extract_datetime_from_filename(os.path.basename(local_filename))
                         tg_success = asyncio.run(try_telegram_upload(config, streamable_filename, caption=caption))
-                        if tg_success and not args.keep_after_upload:
-                            os.remove(streamable_filename)
-                            print(f'Streamable file deleted after Telegram upload: {streamable_filename}')
-                        # Delete original file if conversion succeeded
-                        os.remove(local_filename)
-                        print(f'Original file deleted: {local_filename}')
+                        
+                        if tg_success:
+                            # try_telegram_upload now prints its own success message
+                            if not args.keep_after_upload:
+                                os.remove(streamable_filename)
+                                print(f'Streamable file deleted after Telegram upload: {streamable_filename}')
+                            # Delete original downloaded file only if ffmpeg conversion AND Telegram upload were successful
+                            if os.path.exists(local_filename): 
+                                os.remove(local_filename)
+                                print(f'Original downloaded file deleted: {local_filename}')
+                        else:
+                            # try_telegram_upload prints its own "Failed to upload..." message
+                            print(f'Telegram upload failed for {streamable_filename}. This streamable file and its original ({local_filename}) will be kept.')
+
                     except subprocess.CalledProcessError as e:
                         print(f'ffmpeg failed for {local_filename}: {e}')
             if total_pbar:
@@ -252,8 +275,20 @@ def main():
             print(ex)
             return False
         finally:
-            ftp.quit()
-            print('Disconnected. Enjoy =D')
+            try:
+                if ftp.sock: # Check if ftp object was successfully initialized and connected
+                    ftp.quit()
+                    print('Disconnected. Enjoy =D')
+                else:
+                    print('FTP connection was not fully established or already closed.')
+            except all_errors as e:
+                print(f'Error during FTP quit/close: {e}. Connection might have already been terminated.')
+            # Ensure ftp.sock is None if we explicitly closed or if it was never opened properly
+            if hasattr(ftp, '_sock') and ftp._sock is not None: # Check _sock for ImplicitFTP_TLS
+                try:
+                    ftp.close() # More forceful close if quit failed or wasn't called
+                except all_errors: # Ignore errors during this final close attempt
+                    pass
         return True
 
     if args.watch:
