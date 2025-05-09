@@ -11,12 +11,33 @@ from telegram import Bot
 from telegram.error import TelegramError
 import asyncio
 import re
+import shutil
+import sys
+
+def check_ffmpeg_dependencies():
+    """Check if ffmpeg and ffprobe are available in the system PATH."""
+    ffmpeg_path = shutil.which('ffmpeg')
+    ffprobe_path = shutil.which('ffprobe')
+    
+    if not ffmpeg_path or not ffprobe_path:
+        print("Critical Dependency Error: FFmpeg tools not found")
+        if not ffmpeg_path:
+            print("- ffmpeg is not found in system PATH or script directory")
+        if not ffprobe_path:
+            print("- ffprobe is not found in system PATH or script directory")
+        print("Please install FFmpeg and ensure it's in your system PATH or in the same directory as this script.")
+        sys.exit(1)
+    
+    print(f"Dependencies found:\n- ffmpeg: {ffmpeg_path}\n- ffprobe: {ffprobe_path}")
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
 with open(CONFIG_PATH, 'r') as f:
     config = json.load(f)
 PRINTER_IP = config.get('printer_ip')
 ACCESS_CODE = config.get('access_code')
+
+# Check FFmpeg dependencies on script launch
+check_ffmpeg_dependencies()
 
 class ImplicitFTP_TLS(ftplib.FTP_TLS):
     """FTP_TLS subclass that automatically wraps sockets in SSL to support implicit FTPS."""
@@ -61,8 +82,18 @@ def get_base_name(filename):
 def parse_date(item):
     """Parse the date and time from the FTP listing item."""
     try:
+        # Use the current year as default to avoid deprecation warning
+        current_year = datetime.now().year
         date_str = f"{item['month']} {item['day']} {item['time_or_year']}"
-        return datetime.strptime(date_str, "%b %d %H:%M")
+        
+        # Try parsing with current year
+        parsed_date = datetime.strptime(f"{current_year} {date_str}", "%Y %b %d %H:%M")
+        
+        # If the parsed date is in the future, use previous year
+        if parsed_date > datetime.now():
+            parsed_date = datetime.strptime(f"{current_year - 1} {date_str}", "%Y %b %d %H:%M")
+        
+        return parsed_date
     except ValueError:
         return None
 
@@ -85,13 +116,24 @@ def get_video_duration(filename):
         return float(result.stdout.strip())
     except Exception as e:
         print(f"Could not determine video duration for {filename}: {e}")
-        return 0.0
+        return 999.0
 
 async def try_telegram_upload(config, file_path, caption=None):
     bot_token = config.get('telegram_bot_token')
     channel_id = config.get('telegram_channel_id')
     if not bot_token or not channel_id:
+        print("Telegram upload skipped: Missing bot token or channel ID")
         return False
+    
+    # Validate file exists and is not empty
+    if not os.path.exists(file_path):
+        print(f"Error: File not found - {file_path}")
+        return False
+    
+    if os.path.getsize(file_path) == 0:
+        print(f"Error: File is empty - {file_path}")
+        return False
+    
     try:
         bot = Bot(token=bot_token)
         with open(file_path, 'rb') as vid:
@@ -119,7 +161,7 @@ def main():
     out_dir = args.out
     os.makedirs(out_dir, exist_ok=True)
 
-    def download_and_process():
+    async def download_and_process():
         ftp = ImplicitFTP_TLS()
         ftp.set_pasv(True)
         print('Connecting...')
@@ -179,13 +221,31 @@ def main():
                 if not args.do_not_delete:
                     video_file_ftp_path = f'/timelapse/{item["name"]}'
                     deleted_video_successfully = False
-                    try:
-                        ftp.delete(video_file_ftp_path)
-                        print(f'Remote file deleted: {video_file_ftp_path}')
-                        deleted_video_successfully = True
-                    except Exception as e:
-                        print(f'Failed to delete remote file {video_file_ftp_path}: {e}\n')
-
+                    # Check if the file should be deleted
+                    should_delete_remote_file = False
+                    
+                    # If processing a streamable file, only delete if upload is successful
+                    if not args.no_make_streamable and not args.keep_after_upload:
+                        upload_success = await try_telegram_upload(config, streamable_filename, caption=extract_datetime_from_filename(local_filename))
+                        should_delete_remote_file = upload_success
+                    
+                    # If not processing or keeping after upload, delete remote file
+                    elif not args.do_not_delete:
+                        should_delete_remote_file = True
+                    
+                    # Attempt to delete remote file if conditions are met
+                    if should_delete_remote_file:
+                        try:
+                            ftp.delete(video_file_ftp_path)
+                            print(f'Remote file deleted: {video_file_ftp_path}')
+                            deleted_video_successfully = True
+                        except Exception as e:
+                            print(f'Failed to delete remote file {video_file_ftp_path}: {e}\n')
+                    
+                    # If not deleting remote file, log the retention
+                    if not should_delete_remote_file:
+                        print(f'Remote file retained: {video_file_ftp_path}')
+                    
                     if deleted_video_successfully:
                         video_base_name = get_base_name(item['name'])
                         thumbnail_to_delete_full_name = None
@@ -294,18 +354,14 @@ def main():
     if args.watch:
         print('Entering watch mode. Checking for new files every 60 seconds...')
         while True:
-            processed_files = download_and_process()
+            processed_files = asyncio.run(download_and_process())
             if not processed_files:
                 time.sleep(60)
     else:
-        while True:
-            try:
-                download_and_process()
-                break  # Exit loop if successful
-            except Exception as e:
-                print(f"Error occurred: {e}")
-                print("Retrying in 60 seconds...")
-                time.sleep(60)
+        try:
+            asyncio.run(download_and_process())
+        except Exception as e:
+            print(f"Error occurred: {e}")
 
 if __name__ == "__main__":
     main()
