@@ -156,7 +156,76 @@ def main():
     parser.add_argument('--no-make-streamable', action='store_true', help='Do NOT use ffmpeg+NVIDIA to upscale to 1080p and make streamable (default is ON)')
     parser.add_argument('--keep-after-upload', action='store_true', help='Keep streamable file after Telegram upload (default: delete after upload)')
     parser.add_argument('--no-gpu', action='store_true', help='Force CPU-only processing (no NVIDIA GPU required)')
+    parser.add_argument('--speed', type=float, default=0.3, help='Adjust video speed (e.g., 0.5 for half speed, 2.0 for double speed). Default is 0.3 (slower speed).')
+    parser.add_argument('--test', action='store_true', help='Run test mode: process and upload test_video.avi')
     args = parser.parse_args()
+
+    # Test mode implementation
+    if args.test:
+        # Specific test video file
+        script_dir = os.path.dirname(__file__)
+        test_video = os.path.join(script_dir, 'test_video.avi')
+        
+        if not os.path.exists(test_video):
+            print(f'Test video not found: {test_video}')
+            sys.exit(1)
+        
+        print(f'Testing with video: {test_video}')
+        
+        # Prepare output directory
+        out_dir = args.out
+        os.makedirs(out_dir, exist_ok=True)
+        
+        # Process video
+        streamable_filename = os.path.splitext(test_video)[0] + '_streamable.mp4'
+        
+        # Calculate original FPS
+        original_fps = float(subprocess.check_output([
+            'ffprobe', '-v', 'error', 
+            '-select_streams', 'v:0', 
+            '-count_packets', 
+            '-show_entries', 'stream=r_frame_rate', 
+            '-of', 'csv=p=0', 
+            test_video
+        ], text=True).strip().split('/')[0])
+        
+        # Adjust frame selection to maintain video quality while reducing frame count
+        target_fps = max(1, original_fps * args.speed)
+        
+        if args.no_gpu:
+            ffmpeg_cmd = [
+                'ffmpeg', '-y', '-i', test_video,
+                '-vf', f'fps={target_fps},scale=1920:1080',
+                '-c:v', 'libx265', '-preset', 'slow', '-b:v', '5M',
+                '-tag:v', 'hvc1', '-video_track_timescale', '90000',
+                streamable_filename
+            ]
+        else:
+            ffmpeg_cmd = [
+                'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', test_video,
+                '-vf', f'fps={target_fps},scale=1920:1080',
+                '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '5M',
+                '-tag:v', 'hvc1', '-video_track_timescale', '90000',
+                streamable_filename
+            ]
+        
+        try:
+            subprocess.run(ffmpeg_cmd, check=True)
+            print(f'Created streamable video at {streamable_filename} (speed: {args.speed}x)')
+            
+            # Attempt Telegram upload
+            caption = f'Test Video: {os.path.basename(test_video)} (Speed: {args.speed}x)'
+            tg_success = asyncio.run(try_telegram_upload(config, streamable_filename, caption=caption))
+            
+            # Clean up
+            if os.path.exists(streamable_filename):
+                os.remove(streamable_filename)
+            
+            sys.exit(0 if tg_success else 1)
+        
+        except subprocess.CalledProcessError as e:
+            print(f'Test mode failed: {e}')
+            sys.exit(1)
 
     out_dir = args.out
     os.makedirs(out_dir, exist_ok=True)
@@ -224,14 +293,12 @@ def main():
                     # Check if the file should be deleted
                     should_delete_remote_file = False
                     
-                    # If processing a streamable file, only delete if upload is successful
-                    if not args.no_make_streamable and not args.keep_after_upload:
-                        upload_success = await try_telegram_upload(config, streamable_filename, caption=extract_datetime_from_filename(local_filename))
-                        should_delete_remote_file = upload_success
-                    
-                    # If not processing or keeping after upload, delete remote file
-                    elif not args.do_not_delete:
-                        should_delete_remote_file = True
+                    # Ensure upload_filename is set to local_filename if not already defined
+                    upload_filename = upload_filename if 'upload_filename' in locals() else local_filename
+
+                    # Upload only once, either with streamable or original file
+                    upload_success = await try_telegram_upload(config, upload_filename, caption=extract_datetime_from_filename(local_filename))
+                    should_delete_remote_file = upload_success
                     
                     # Attempt to delete remote file if conditions are met
                     if should_delete_remote_file:
@@ -272,62 +339,74 @@ def main():
                 if short_file_skipped:
                     continue
 
-                # Optionally process with ffmpeg (default ON)
+                streamable_filename = None
+                upload_filename = local_filename  # Default to original file
+
                 if not args.no_make_streamable:
                     streamable_filename = os.path.splitext(local_filename)[0] + '_streamable.mp4'
-                    if args.no_gpu:
-                        ffmpeg_cmd = [
-                            'ffmpeg', '-y', '-i', local_filename,
-                            '-vf', 'scale=1920:1080',
-                            '-c:v', 'libx265', '-preset', 'slow', '-b:v', '5M',
-                            '-tag:v', 'hvc1', '-video_track_timescale', '90000',
-                            streamable_filename
-                        ]
-                    else:
-                        ffmpeg_cmd = [
-                            'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', local_filename,
-                            '-vf', 'scale=1920:1080',
-                            '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '5M',
-                            '-tag:v', 'hvc1', '-video_track_timescale', '90000',
-                            streamable_filename
-                        ]
-                    print(f'Running ffmpeg to create streamable: {streamable_filename}')
+                    # Calculate frame selection interval to control speed and avoid duplication
                     try:
+                        original_fps = float(subprocess.check_output([
+                            'ffprobe', '-v', 'error', 
+                            '-select_streams', 'v:0', 
+                            '-count_packets', 
+                            '-show_entries', 'stream=r_frame_rate', 
+                            '-of', 'csv=p=0', 
+                            local_filename
+                        ], text=True).strip().split('/')[0])
+                        
+                        # Adjust frame selection to maintain video quality while reducing frame count
+                        target_fps = max(1, original_fps * args.speed)
+                        
+                        if args.no_gpu:
+                            ffmpeg_cmd = [
+                                'ffmpeg', '-y', '-i', local_filename,
+                                '-vf', f'fps={target_fps},scale=1920:1080',
+                                '-c:v', 'libx265', '-preset', 'slow', '-b:v', '5M',
+                                '-tag:v', 'hvc1', '-video_track_timescale', '90000',
+                                streamable_filename
+                            ]
+                        else:
+                            ffmpeg_cmd = [
+                                'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', local_filename,
+                                '-vf', f'fps={target_fps},scale=1920:1080',
+                                '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '5M',
+                                '-tag:v', 'hvc1', '-video_track_timescale', '90000',
+                                streamable_filename
+                            ]
+                        print(f'Running ffmpeg to create streamable: {streamable_filename}')
                         subprocess.run(ffmpeg_cmd, check=True)
                         print(f'Streamable file created: {streamable_filename}')
 
                         # Check file size before attempting upload
                         max_telegram_size = 49 * 1024 * 1024  # 49 MB
-                        try:
-                            file_size = os.path.getsize(streamable_filename)
-                        except FileNotFoundError:
-                            print(f'Error: Streamable file {streamable_filename} not found after ffmpeg run. Skipping item.')
-                            continue # Skip to next item in the main for loop
+                        file_size = os.path.getsize(streamable_filename)
 
                         if file_size > max_telegram_size:
                             print(f'WARNING: Streamable file {streamable_filename} ({file_size / (1024*1024):.2f}MB) is too large for Telegram (limit ~49MB).')
                             print(f'Skipping upload for this file. Both {streamable_filename} and original {local_filename} will be kept for manual handling.')
-                            continue # Skip Telegram upload and subsequent deletions for THIS oversized file
-
-                        # Proceed with Telegram upload if size is okay
-                        caption = extract_datetime_from_filename(os.path.basename(local_filename))
-                        tg_success = asyncio.run(try_telegram_upload(config, streamable_filename, caption=caption))
-                        
-                        if tg_success:
-                            # try_telegram_upload now prints its own success message
-                            if not args.keep_after_upload:
-                                os.remove(streamable_filename)
-                                print(f'Streamable file deleted after Telegram upload: {streamable_filename}')
-                            # Delete original downloaded file only if ffmpeg conversion AND Telegram upload were successful
-                            if os.path.exists(local_filename): 
-                                os.remove(local_filename)
-                                print(f'Original downloaded file deleted: {local_filename}')
+                            streamable_filename = None
                         else:
-                            # try_telegram_upload prints its own "Failed to upload..." message
-                            print(f'Telegram upload failed for {streamable_filename}. This streamable file and its original ({local_filename}) will be kept.')
+                            upload_filename = streamable_filename
 
-                    except subprocess.CalledProcessError as e:
-                        print(f'ffmpeg failed for {local_filename}: {e}')
+                    except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+                        print(f'Error processing video: {e}')
+                        streamable_filename = None
+
+                # Attempt Telegram upload
+                if upload_filename:
+                    caption = extract_datetime_from_filename(os.path.basename(local_filename))
+                    upload_success = await try_telegram_upload(config, upload_filename, caption=caption)
+                    
+                    # Clean up files after successful upload
+                    if upload_success:
+                        if not args.keep_after_upload:
+                            if streamable_filename and os.path.exists(streamable_filename):
+                                os.remove(streamable_filename)
+                            if os.path.exists(local_filename):
+                                os.remove(local_filename)
+                        print(f'Uploaded and cleaned up: {upload_filename}')
+
             if total_pbar:
                 total_pbar.close()
 
