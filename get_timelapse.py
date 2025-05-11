@@ -265,6 +265,7 @@ def main():
 
             for item in files_to_download:
                 print(f'Processing: {item["name"]}')
+                should_delete_remote_file = True
                 local_filename = os.path.join(out_dir, item["name"])
                 file_size = item["size"]
                 with open(local_filename, 'wb') as f:
@@ -280,61 +281,52 @@ def main():
                 duration = get_video_duration(local_filename)
                 if duration < 1.0:
                     print(f"Skipping processing: {local_filename} is too short ({duration:.2f}s)")
-                    os.remove(local_filename)
-                    print(f'Short file deleted: {local_filename}')
+                    print(f'Local file retained: {local_filename}')
+                    should_delete_remote_file = True
+                    upload_filename = None
                     short_file_skipped = True
                 else:
                     short_file_skipped = False
 
+                video_file_ftp_path = f'/timelapse/{item["name"]}'
+                
                 # Delete remote files by default; use --do-not-delete to prevent deletion.
-                if not args.do_not_delete:
-                    video_file_ftp_path = f'/timelapse/{item["name"]}'
+                if args.do_not_delete:
                     deleted_video_successfully = False
                     # Check if the file should be deleted
                     should_delete_remote_file = False
                     
-                    # Ensure upload_filename is set to local_filename if not already defined
-                    upload_filename = upload_filename if 'upload_filename' in locals() else local_filename
-
-                    # Upload only once, either with streamable or original file
-                    upload_success = await try_telegram_upload(config, upload_filename, caption=extract_datetime_from_filename(local_filename))
-                    should_delete_remote_file = upload_success
+                # Attempt to delete remote file if conditions are met
+                if should_delete_remote_file:
+                    try:
+                        ftp.delete(video_file_ftp_path)
+                        print(f'Remote file deleted: {video_file_ftp_path}')
+                        deleted_video_successfully = True
+                    except Exception as e:
+                        print(f'Failed to delete remote file {video_file_ftp_path}: {e}\n')
+                
+                else:
+                    print(f'Remote file retained: {video_file_ftp_path}')
+                
+                if deleted_video_successfully:
+                    video_base_name = get_base_name(item['name'])
+                    thumbnail_to_delete_full_name = None
+                    # Find the corresponding thumbnail's full name from tltndirlist
+                    for tn_item_detail in tltndirlist: # tltndirlist has dicts with 'name' key
+                        if get_base_name(tn_item_detail['name']) == video_base_name:
+                            thumbnail_to_delete_full_name = tn_item_detail['name']
+                            break
                     
-                    # Attempt to delete remote file if conditions are met
-                    if should_delete_remote_file:
+                    if thumbnail_to_delete_full_name:
+                        thumbnail_ftp_path = f'/timelapse/thumbnail/{thumbnail_to_delete_full_name}'
                         try:
-                            ftp.delete(video_file_ftp_path)
-                            print(f'Remote file deleted: {video_file_ftp_path}')
-                            deleted_video_successfully = True
+                            ftp.delete(thumbnail_ftp_path)
+                            print(f'Remote thumbnail deleted: {thumbnail_ftp_path}\n')
                         except Exception as e:
-                            print(f'Failed to delete remote file {video_file_ftp_path}: {e}\n')
-                    
-                    # If not deleting remote file, log the retention
-                    if not should_delete_remote_file:
-                        print(f'Remote file retained: {video_file_ftp_path}')
-                    
-                    if deleted_video_successfully:
-                        video_base_name = get_base_name(item['name'])
-                        thumbnail_to_delete_full_name = None
-                        # Find the corresponding thumbnail's full name from tltndirlist
-                        for tn_item_detail in tltndirlist: # tltndirlist has dicts with 'name' key
-                            if get_base_name(tn_item_detail['name']) == video_base_name:
-                                thumbnail_to_delete_full_name = tn_item_detail['name']
-                                break
-                        
-                        if thumbnail_to_delete_full_name:
-                            thumbnail_ftp_path = f'/timelapse/thumbnail/{thumbnail_to_delete_full_name}'
-                            try:
-                                ftp.delete(thumbnail_ftp_path)
-                                print(f'Remote thumbnail deleted: {thumbnail_ftp_path}\n')
-                            except Exception as e:
-                                print(f'Failed to delete remote thumbnail {thumbnail_ftp_path}: {e}\n')
-                        else:
-                            # If video was deleted, but no thumbnail found for deletion.
-                            print(f'No corresponding remote thumbnail found for base name {video_base_name} to delete.\n')
-                    # If deleted_video_successfully was False, its error message already included \n.
-                else: # This is the "do_not_delete" case
-                    print(f'Remote file retained: /timelapse/{item["name"]}\n')
+                            print(f'Failed to delete remote thumbnail {thumbnail_ftp_path}: {e}\n')
+                    else:
+                        # If video was deleted, but no thumbnail found for deletion.
+                        print(f'No corresponding remote thumbnail found for base name {video_base_name} to delete.\n')
 
                 if short_file_skipped:
                     continue
