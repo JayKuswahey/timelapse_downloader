@@ -1,4 +1,5 @@
 import ftplib
+from ftplib import all_errors
 import ssl
 import os
 import json
@@ -56,8 +57,6 @@ class ImplicitFTP_TLS(ftplib.FTP_TLS):
         if value is not None and not isinstance(value, ssl.SSLSocket):
             value = self.context.wrap_socket(value)
         self._sock = value
-
-from ftplib import all_errors
 
 def parse_ftp_listing(line):
     """Parse a line from an FTP LIST command."""
@@ -231,21 +230,35 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     async def download_and_process():
-        ftp = ImplicitFTP_TLS()
-        ftp.set_pasv(True)
-        print('Connecting...')
-        ftp.connect(host=PRINTER_IP, port=990, timeout=15, source_address=None)
-        ftp.login('bblp', ACCESS_CODE)
-        ftp.prot_p()
+        ftp = None
         try:
+            ftp = ImplicitFTP_TLS()
+            ftp.set_pasv(True)
+            print('Connecting...')
+            try:
+                ftp.connect(host=PRINTER_IP, port=990, timeout=15, source_address=None)
+                ftp.login('bblp', ACCESS_CODE)
+                ftp.prot_p()
+            except OSError as e:
+                print(f"Network error during FTP connection: {e}")
+                return False
+            except all_errors as ex:
+                print(f"FTP error during connection: {ex}")
+                return False
+
             tldirlist = []
             tltndirlist = []
-            ftp.cwd('/timelapse')
-            ftp.retrlines('LIST', tldirlist.append)
-            tldirlist = [parse_ftp_listing(line) for line in tldirlist if parse_ftp_listing(line)]
-            ftp.cwd('/timelapse/thumbnail')
-            ftp.retrlines('LIST', tltndirlist.append)
-            tltndirlist = [parse_ftp_listing(line) for line in tltndirlist if parse_ftp_listing(line)]
+            try:
+                ftp.cwd('/timelapse')
+                ftp.retrlines('LIST', tldirlist.append)
+                tldirlist = [parse_ftp_listing(line) for line in tldirlist if parse_ftp_listing(line)]
+                ftp.cwd('/timelapse/thumbnail')
+                ftp.retrlines('LIST', tltndirlist.append)
+                tltndirlist = [parse_ftp_listing(line) for line in tltndirlist if parse_ftp_listing(line)]
+            except all_errors as ex:
+                print(f"FTP error during directory listing: {ex}")
+                return False
+
             tldirlist_dict = {get_base_name(item['name']): item for item in tldirlist}
             tltndirlist_set = {get_base_name(item['name']) for item in tltndirlist}
             matching_files = [tldirlist_dict[base_name] for base_name in tldirlist_dict if base_name in tltndirlist_set]
@@ -268,17 +281,31 @@ def main():
                 should_delete_remote_file = True
                 local_filename = os.path.join(out_dir, item["name"])
                 file_size = item["size"]
-                with open(local_filename, 'wb') as f:
-                    with tqdm(total=file_size, unit='B', unit_scale=True, desc=f"Downloading {item['name']}") as pbar:
-                        def callback(data):
-                            f.write(data)
-                            pbar.update(len(data))
-                            if total_pbar:
-                                total_pbar.update(len(data))
-                        ftp.retrbinary(f'RETR /timelapse/{item["name"]}', callback)
-                print(f'File downloaded: {local_filename}')
+                try:
+                    with open(local_filename, 'wb') as f:
+                        with tqdm(total=file_size, unit='B', unit_scale=True, desc=f"Downloading {item['name']}") as pbar:
+                            def callback(data):
+                                f.write(data)
+                                pbar.update(len(data))
+                                if total_pbar:
+                                    total_pbar.update(len(data))
+                            try:
+                                ftp.retrbinary(f'RETR /timelapse/{item["name"]}', callback)
+                            except all_errors as ex:
+                                print(f"FTP error during file download: {ex}")
+                                continue
+                    print(f'File downloaded: {local_filename}')
+                except Exception as e:
+                    print(f"Error writing file {local_filename}: {e}")
+                    continue
+
                 # Check video duration before any processing
-                duration = get_video_duration(local_filename)
+                try:
+                    duration = get_video_duration(local_filename)
+                except Exception as e:
+                    print(f"Error getting video duration: {e}")
+                    duration = 0
+
                 if duration < 1.0:
                     print(f"Skipping processing: {local_filename} is too short ({duration:.2f}s)")
                     print(f'Local file retained: {local_filename}')
@@ -293,7 +320,6 @@ def main():
                 # Delete remote files by default; use --do-not-delete to prevent deletion.
                 if args.do_not_delete:
                     deleted_video_successfully = False
-                    # Check if the file should be deleted
                     should_delete_remote_file = False
                     
                 # Attempt to delete remote file if conditions are met
@@ -302,17 +328,17 @@ def main():
                         ftp.delete(video_file_ftp_path)
                         print(f'Remote file deleted: {video_file_ftp_path}')
                         deleted_video_successfully = True
-                    except Exception as e:
+                    except all_errors as e:
                         print(f'Failed to delete remote file {video_file_ftp_path}: {e}\n')
-                
+                        deleted_video_successfully = False
                 else:
                     print(f'Remote file retained: {video_file_ftp_path}')
-                
+                    deleted_video_successfully = False
+
                 if deleted_video_successfully:
                     video_base_name = get_base_name(item['name'])
                     thumbnail_to_delete_full_name = None
-                    # Find the corresponding thumbnail's full name from tltndirlist
-                    for tn_item_detail in tltndirlist: # tltndirlist has dicts with 'name' key
+                    for tn_item_detail in tltndirlist:
                         if get_base_name(tn_item_detail['name']) == video_base_name:
                             thumbnail_to_delete_full_name = tn_item_detail['name']
                             break
@@ -322,10 +348,9 @@ def main():
                         try:
                             ftp.delete(thumbnail_ftp_path)
                             print(f'Remote thumbnail deleted: {thumbnail_ftp_path}\n')
-                        except Exception as e:
+                        except all_errors as e:
                             print(f'Failed to delete remote thumbnail {thumbnail_ftp_path}: {e}\n')
                     else:
-                        # If video was deleted, but no thumbnail found for deletion.
                         print(f'No corresponding remote thumbnail found for base name {video_base_name} to delete.\n')
 
                 if short_file_skipped:
@@ -336,20 +361,16 @@ def main():
 
                 if not args.no_make_streamable:
                     streamable_filename = os.path.splitext(local_filename)[0] + '_streamable.mp4'
-                    # Calculate frame selection interval to control speed and avoid duplication
                     try:
                         original_fps = float(subprocess.check_output([
-                            'ffprobe', '-v', 'error', 
-                            '-select_streams', 'v:0', 
-                            '-count_packets', 
-                            '-show_entries', 'stream=r_frame_rate', 
-                            '-of', 'csv=p=0', 
+                            'ffprobe', '-v', 'error',
+                            '-select_streams', 'v:0',
+                            '-count_packets',
+                            '-show_entries', 'stream=r_frame_rate',
+                            '-of', 'csv=p=0',
                             local_filename
                         ], text=True).strip().split('/')[0])
-                        
-                        # Adjust frame selection to maintain video quality while reducing frame count
                         target_fps = max(1, original_fps * args.speed)
-                        
                         if args.no_gpu:
                             ffmpeg_cmd = [
                                 'ffmpeg', '-y', '-i', local_filename,
@@ -369,57 +390,67 @@ def main():
                         print(f'Running ffmpeg to create streamable: {streamable_filename}')
                         subprocess.run(ffmpeg_cmd, check=True)
                         print(f'Streamable file created: {streamable_filename}')
-
-                        # Check file size before attempting upload
                         max_telegram_size = 49 * 1024 * 1024  # 49 MB
                         file_size = os.path.getsize(streamable_filename)
-
                         if file_size > max_telegram_size:
                             print(f'WARNING: Streamable file {streamable_filename} ({file_size / (1024*1024):.2f}MB) is too large for Telegram (limit ~49MB).')
                             print(f'Skipping upload for this file. Both {streamable_filename} and original {local_filename} will be kept for manual handling.')
                             streamable_filename = None
                         else:
                             upload_filename = streamable_filename
-
                     except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
                         print(f'Error processing video: {e}')
+                        streamable_filename = None
+                    except Exception as e:
+                        print(f'Unexpected error during streamable creation: {e}')
                         streamable_filename = None
 
                 # Attempt Telegram upload
                 if upload_filename:
                     caption = extract_datetime_from_filename(os.path.basename(local_filename))
-                    upload_success = await try_telegram_upload(config, upload_filename, caption=caption)
+                    try:
+                        upload_success = await try_telegram_upload(config, upload_filename, caption=caption)
+                    except Exception as e:
+                        print(f"Error during Telegram upload: {e}")
+                        upload_success = False
                     
                     # Clean up files after successful upload
                     if upload_success:
                         if not args.keep_after_upload:
-                            if streamable_filename and os.path.exists(streamable_filename):
-                                os.remove(streamable_filename)
-                            if os.path.exists(local_filename):
-                                os.remove(local_filename)
+                            try:
+                                if streamable_filename and os.path.exists(streamable_filename):
+                                    os.remove(streamable_filename)
+                                if os.path.exists(local_filename):
+                                    os.remove(local_filename)
+                            except Exception as e:
+                                print(f"Error during cleanup: {e}")
                         print(f'Uploaded and cleaned up: {upload_filename}')
 
             if total_pbar:
                 total_pbar.close()
 
-        except all_errors as ex:
-            print(ex)
+        except Exception as ex:
+            print(f"General error in download_and_process: {ex}")
             return False
         finally:
-            try:
-                if ftp.sock: # Check if ftp object was successfully initialized and connected
-                    ftp.quit()
-                    print('Disconnected. Enjoy =D')
-                else:
-                    print('FTP connection was not fully established or already closed.')
-            except all_errors as e:
-                print(f'Error during FTP quit/close: {e}. Connection might have already been terminated.')
-            # Ensure ftp.sock is None if we explicitly closed or if it was never opened properly
-            if hasattr(ftp, '_sock') and ftp._sock is not None: # Check _sock for ImplicitFTP_TLS
+            if ftp is not None:
                 try:
-                    ftp.close() # More forceful close if quit failed or wasn't called
-                except all_errors: # Ignore errors during this final close attempt
-                    pass
+                    if ftp.sock:
+                        ftp.quit()
+                        print('Disconnected. Enjoy =D')
+                    else:
+                        print('FTP connection was not fully established or already closed.')
+                except all_errors as e:
+                    print(f'Error during FTP quit/close: {e}. Connection might have already been terminated.')
+                except Exception as e:
+                    print(f'Unexpected error during FTP quit/close: {e}')
+                if hasattr(ftp, '_sock') and ftp._sock is not None:
+                    try:
+                        ftp.close()
+                    except all_errors:
+                        pass
+                    except Exception:
+                        pass
         return True
 
     if args.watch:
