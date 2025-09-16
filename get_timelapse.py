@@ -153,6 +153,7 @@ def main():
     parser.add_argument('--out', default=default_timelapse_dir, help='Output folder to save videos (default: ./timelapse)')
     parser.add_argument('--watch', action='store_true', help='Continuously check every 60s and download new files')
     parser.add_argument('--no-make-streamable', action='store_true', help='Do NOT use ffmpeg+NVIDIA to upscale to 1080p and make streamable (default is ON)')
+    parser.add_argument('--upscale', action='store_true', help='Upscale to 1080p when creating streamable file (uses GPU if available). Off by default.')
     parser.add_argument('--keep-after-upload', action='store_true', help='Keep streamable file after Telegram upload (default: delete after upload)')
     parser.add_argument('--no-gpu', action='store_true', help='Force CPU-only processing (no NVIDIA GPU required)')
     parser.add_argument('--speed', type=float, default=0.3, help='Adjust video speed (e.g., 0.5 for half speed, 2.0 for double speed). Default is 0.3 (slower speed).')
@@ -202,7 +203,7 @@ def main():
         else:
             ffmpeg_cmd = [
                 'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', test_video,
-                '-vf', f'fps={target_fps},scale=1920:1080',
+                '-vf', f'fps={target_fps}',
                 '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '5M',
                 '-tag:v', 'hvc1', '-video_track_timescale', '90000',
                 streamable_filename
@@ -360,6 +361,7 @@ def main():
                 upload_filename = local_filename  # Default to original file
 
                 if not args.no_make_streamable:
+                    scale_filter = ',scale=1920:1080' if args.upscale else ''
                     streamable_filename = os.path.splitext(local_filename)[0] + '_streamable.mp4'
                     try:
                         original_fps = float(subprocess.check_output([
@@ -374,7 +376,7 @@ def main():
                         if args.no_gpu:
                             ffmpeg_cmd = [
                                 'ffmpeg', '-y', '-i', local_filename,
-                                '-vf', f'fps={target_fps},scale=1920:1080',
+                                '-vf', f'fps={target_fps}{scale_filter}',
                                 '-c:v', 'libx265', '-preset', 'slow', '-b:v', '5M',
                                 '-tag:v', 'hvc1', '-video_track_timescale', '90000',
                                 streamable_filename
@@ -382,7 +384,7 @@ def main():
                         else:
                             ffmpeg_cmd = [
                                 'ffmpeg', '-y', '-hwaccel', 'cuda', '-i', local_filename,
-                                '-vf', f'fps={target_fps},scale=1920:1080',
+                                '-vf', f'fps={target_fps}{scale_filter}',
                                 '-c:v', 'hevc_nvenc', '-preset', 'p7', '-tune', 'hq', '-b:v', '5M',
                                 '-tag:v', 'hvc1', '-video_track_timescale', '90000',
                                 streamable_filename
